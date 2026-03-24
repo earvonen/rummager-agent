@@ -24,7 +24,7 @@ spec:
       default: Containerfile
     - name: git-url
       type: string
-      default: https://github.com/org/rummager-agent.git
+      default: https://github.com/earvonen/rummager-agent.git
     - name: git-revision
       type: string
       default: main
