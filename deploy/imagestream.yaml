@@ -1,0 +1,13 @@
+# ImageStream for the Rummager (rummager-agent) container image.
+# After a successful push from Tekton to
+# image-registry.openshift-image-registry.svc:5000/<namespace>/rummager-agent:<tag>,
+# OpenShift will record tags here (local lookup policy optional).
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  name: rummager-agent
+  labels:
+    app: rummager-agent
+spec:
+  lookupPolicy:
+    local: true

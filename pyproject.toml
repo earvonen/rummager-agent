@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rummager-agent"
+version = "0.1.0"
+description = "Rummager: Kubernetes pod log errors → Llama Stack + MCP + Git clone → GitHub PR"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "kubernetes>=28.1.0",
+    "llama-stack-client>=0.3.0",
+    "GitPython>=3.1.40",
+    "pydantic-settings>=2.2.0",
+    "PyYAML>=6.0.1",
+]
+
+[project.scripts]
+rummager-agent = "rummager_agent.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
