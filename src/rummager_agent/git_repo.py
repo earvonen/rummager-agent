@@ -95,21 +95,39 @@ def clone_repository(
         raise FileExistsError(f"Workspace not empty: {dest}")
 
     url = _authenticated_clone_url(source.clone_url, token)
-    logger.info("Cloning %s into %s", source.clone_url, dest)
-    repo = Repo.clone_from(url, dest, depth=depth, multi_options=[f"--depth={depth}"])
-
-    if source.revision:
+    rev = (source.revision or "").strip()
+    if rev:
+        logger.info("Cloning %s into %s (branch/ref %r, shallow)", source.clone_url, dest, rev)
         try:
-            repo.git.fetch("origin", source.revision, depth=depth)
+            # Shallow single-branch clone so HEAD is the configured branch, not the repo default (e.g. main).
+            Repo.clone_from(
+                url,
+                dest,
+                depth=depth,
+                branch=rev,
+                single_branch=True,
+            )
         except Exception as e:
-            logger.warning("Fetch revision %s failed (%s); continuing with default checkout", source.revision, e)
-        try:
-            repo.git.checkout(source.revision)
-        except Exception:
+            logger.warning(
+                "Shallow clone with --branch %r failed (%s); falling back to default clone + checkout",
+                rev,
+                e,
+            )
+            repo = Repo.clone_from(url, dest, depth=depth)
             try:
-                repo.git.checkout("FETCH_HEAD")
+                repo.git.fetch("origin", rev, depth=depth)
             except Exception as e2:
-                logger.warning("Checkout %s failed: %s", source.revision, e2)
+                logger.warning("Fetch %s failed: %s", rev, e2)
+            try:
+                repo.git.checkout(rev)
+            except Exception:
+                try:
+                    repo.git.checkout("FETCH_HEAD")
+                except Exception as e3:
+                    logger.warning("Checkout %s failed: %s", rev, e3)
+    else:
+        logger.info("Cloning %s into %s (default branch)", source.clone_url, dest)
+        Repo.clone_from(url, dest, depth=depth)
 
     return dest
 
@@ -147,7 +165,23 @@ def create_branch_commit_push_pr(
     with r.config_writer() as cw:
         cw.set_value("user", "name", "rummager-agent")
         cw.set_value("user", "email", "rummager-agent@users.noreply.openshift.local")
+    configured_base = (base_branch or "").strip() or None
+
     if r.is_dirty(untracked_files=True):
+        # Feature branch must start from the configured merge base, not whatever default clone used.
+        if configured_base:
+            try:
+                r.git.checkout(configured_base)
+            except Exception:
+                try:
+                    r.git.checkout(f"origin/{configured_base}")
+                except Exception as e:
+                    logger.warning(
+                        "Could not checkout PR base %r before creating %r (dirty tree may block switch): %s",
+                        configured_base,
+                        branch_name,
+                        e,
+                    )
         r.git.checkout("-b", branch_name)
         r.git.add(all=True)
         r.git.commit("-m", "fix: address error seen in pod logs (Rummager)")
@@ -162,12 +196,14 @@ def create_branch_commit_push_pr(
     import urllib.error
     import urllib.request
 
-    base = (base_branch or "").strip() or None
+    base = configured_base
     if not base:
         try:
             base = r.git.rev_parse("--abbrev-ref", "origin/HEAD").replace("origin/", "")
         except Exception:
             base = "main"
+
+    logger.info("GitHub PR: base=%r head=%r", base, branch_name)
 
     url = f"https://api.github.com/repos/{owner}/{repo}/pulls"
     payload = {"title": title, "body": body, "head": branch_name, "base": base}

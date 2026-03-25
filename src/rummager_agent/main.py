@@ -41,9 +41,10 @@ repository (branch from configuration). Your goals:
    use `workspace_list_files`, `workspace_read_file`, and `workspace_write_file` under that clone.
 3. Apply **minimal, correct fixes** with `workspace_write_file` (or equivalent) so changes land in the
    local clone.
-4. When the fix is ready, use **GitHub MCP tools** to publish: branch, push, and open a **pull request**
-   against the configured base branch. GitHub authentication is handled by the GitHub MCP server when
-   used that way.
+4. When the fix is ready, use **GitHub MCP tools** to publish: branch, push, and open a **pull request**.
+   The PR **base** branch must be **exactly** the branch named in the user message (the same as
+   `RUMMAGER_GIT_BRANCH` / the local clone)—**do not** use `main` or the repo default unless that branch
+   name was explicitly given. GitHub authentication is handled by the GitHub MCP server when used that way.
 
 If this process also has a **Kubernetes MCP** tool group, use it only when extra cluster context helps.
 
@@ -119,8 +120,9 @@ Recent commits:
 Use **GitHub MCP** tools when you want to inspect or cross-check source beyond the clone. Use
 `workspace_list_files` / `workspace_read_file` / `workspace_write_file` for edits under the clone.
 
-When your changes are ready, open a pull request with suggested head branch name `{branch_hint}` targeting
-**base** `{base_branch}`.
+When your changes are ready, open a pull request with suggested head branch name `{branch_hint}`.
+The PR **base** (merge target) **must** be **`{base_branch}`**—not `main` or any other branch unless
+`{base_branch}` is literally that name.
 
 Then write a short summary of the root cause and the fix (include the PR link if you have it).
 """
