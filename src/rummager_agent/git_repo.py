@@ -148,6 +148,68 @@ def git_repo_summary(repo_path: Path, max_lines: int = 200) -> str:
     return "\n".join(lines)
 
 
+def _create_feature_branch_from_base(
+    r: Repo,
+    branch_name: str,
+    configured_base: str,
+    fetch_depth: int,
+) -> None:
+    """
+    Put model edits on ``branch_name`` starting at ``origin/<configured_base>`` (or fetch it first).
+    Uses stash so a dirty tree cannot block switching away from an accidental ``main`` checkout.
+    """
+    r.git.stash("push", "-u", "-m", "rummager-wip")
+    stash_pop_attempted = False
+    try:
+        refspec = f"refs/heads/{configured_base}:refs/remotes/origin/{configured_base}"
+        try:
+            r.git.fetch("origin", refspec, depth=fetch_depth)
+        except Exception as e:
+            logger.info(
+                "Fetch %s failed (branch may already exist locally): %s",
+                refspec,
+                e,
+            )
+        remote_ref = f"origin/{configured_base}"
+        try:
+            r.git.rev_parse("--verify", remote_ref)
+        except Exception:
+            try:
+                r.git.fetch("origin", configured_base, depth=fetch_depth)
+            except Exception as e2:
+                raise RuntimeError(
+                    f"Could not fetch configured branch {configured_base!r} from origin; "
+                    f"check RUMMAGER_GIT_BRANCH and repo access."
+                ) from e2
+            try:
+                r.git.rev_parse("--verify", remote_ref)
+            except Exception as e3:
+                raise RuntimeError(
+                    f"After fetch, ref {remote_ref!r} is still missing; "
+                    f"verify the branch name matches the remote."
+                ) from e3
+
+        r.git.checkout(remote_ref)
+        try:
+            r.git.checkout("-b", branch_name)
+        except Exception as e:
+            raise RuntimeError(
+                f"Branch {branch_name!r} may already exist; remove it or use a new RUMMAGER_PR_BRANCH_PREFIX."
+            ) from e
+        stash_pop_attempted = True
+        r.git.stash("pop")
+    except Exception:
+        if not stash_pop_attempted:
+            try:
+                r.git.stash("pop")
+            except Exception as e2:
+                logger.warning(
+                    "Could not restore working tree from stash after failed branch setup: %s",
+                    e2,
+                )
+        raise
+
+
 def create_branch_commit_push_pr(
     repo_path: Path,
     branch_name: str,
@@ -157,6 +219,7 @@ def create_branch_commit_push_pr(
     title: str,
     body: str,
     base_branch: str | None,
+    fetch_depth: int = 50,
 ) -> str:
     """
     Commit all changes, push branch, open a pull request via GitHub REST API.
@@ -168,21 +231,10 @@ def create_branch_commit_push_pr(
     configured_base = (base_branch or "").strip() or None
 
     if r.is_dirty(untracked_files=True):
-        # Feature branch must start from the configured merge base, not whatever default clone used.
         if configured_base:
-            try:
-                r.git.checkout(configured_base)
-            except Exception:
-                try:
-                    r.git.checkout(f"origin/{configured_base}")
-                except Exception as e:
-                    logger.warning(
-                        "Could not checkout PR base %r before creating %r (dirty tree may block switch): %s",
-                        configured_base,
-                        branch_name,
-                        e,
-                    )
-        r.git.checkout("-b", branch_name)
+            _create_feature_branch_from_base(r, branch_name, configured_base, fetch_depth)
+        else:
+            r.git.checkout("-b", branch_name)
         r.git.add(all=True)
         r.git.commit("-m", "fix: address error seen in pod logs (Rummager)")
     else:

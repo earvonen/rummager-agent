@@ -225,7 +225,8 @@ def process_log_incident(
                 repo=src.repo,
                 title=pr_title,
                 body=pr_body,
-                base_branch=src.default_branch_hint,
+                base_branch=settings.git_branch.strip() or src.default_branch_hint,
+                fetch_depth=settings.git_clone_depth,
             )
         except Exception:
             logger.exception("Failed to create pull request for %s/%s", src.owner, src.repo)
