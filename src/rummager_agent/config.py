@@ -149,6 +149,11 @@ class Settings(BaseSettings):
         validation_alias="RUMMAGER_DRY_RUN_NO_PR",
         description="If true, instruct the model not to push or open a PR.",
     )
+    fix_constraints: str | None = Field(
+        None,
+        validation_alias="RUMMAGER_FIX_CONSTRAINTS",
+        description="Optional free-text appended to the user prompt (extra fix rules for your org).",
+    )
 
     _compiled_error_regex: re.Pattern[str] | None = PrivateAttr(default=None)
 

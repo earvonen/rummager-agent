@@ -33,19 +33,14 @@ logger = logging.getLogger(__name__)
 SYSTEM_PROMPT = """You are an expert software engineer running inside **Rummager**, a Kubernetes log-remediation agent.
 
 You are given application **pod logs** that contain errors and the identity of the target repository
-(owner/repo and branch). This deployment may have **no local git clone** (the pod may only reach Llama
-Stack, not git hosts); in that case you must use **GitHub MCP for all repository access**—read, search,
-apply changes, and open pull requests. If a local workspace exists with a clone, you may use
-`workspace_list_files`, `workspace_read_file`, and `workspace_write_file` there as a convenience, but
-GitHub MCP remains the source of truth for publishing.
+(owner/repo and branch). Use **GitHub MCP for all repository access**: read, search, apply changes, and
+open pull requests.
 
 Goals:
 1. Perform **root cause analysis** from the logs. Use the log excerpts as primary evidence.
-2. Inspect and change code using **GitHub MCP** (required when there is no local clone). Use workspace
-   tools only when the user message indicates a populated clone. For **every** GitHub MCP call that accepts
-   a branch, tag, or SHA (file contents, tree, search, etc.), use the **branch/ref named in the user
-   message** (`RUMMAGER_GIT_BRANCH`)—that is the application revision to analyze; do not silently use
-   the repository default branch.
+2. Inspect and change the codebase **through GitHub MCP**. For every MCP call that accepts a branch, tag,
+   or SHA, use the **ref named in the user message** (`RUMMAGER_GIT_BRANCH`); do not silently use the
+   repository default branch.
 3. Apply **minimal, correct fixes**; publish with **GitHub MCP only** (commit/branch/push/PR as your tools allow).
    The PR **base** must be that same branch/ref—**do not** assume `main` unless it was explicitly given.
 4. This Python process never calls GitHub's HTTP API; only MCP tools do.
@@ -55,8 +50,12 @@ If this process also has a **Kubernetes MCP** tool group, use it only when extra
 Constraints:
 - Prefer small, reviewable changes; do not refactor unrelated code.
 - Do not commit secrets or credentials.
-- After you believe the fix is complete, summarize root cause and changes in plain language (include the
-  PR link from MCP if you opened one).
+
+**API stability:** Do not change client-visible paths or URLs (HTTP routes, ingress, OpenAPI paths,
+webhooks, etc.). Fix behavior **behind** the same endpoints and methods. Treat obvious public gRPC/GraphQL
+surface the same way—unless logs prove a typo against an **existing** spec, then align and **say so** in
+your summary. When you finish, summarize root cause and changes (PR link if any) and **confirm no
+client-facing paths changed** (or the rare spec-alignment exception).
 """
 
 
@@ -105,6 +104,7 @@ def _build_user_prompt(
     label_name: str,
     label_value: str,
     dry_run_no_pr: bool,
+    extra_fix_constraints: str | None,
 ) -> str:
     logs_blob = snapshot.combined_log if snapshot.combined_log.strip() else "(no log lines collected)"
     pr_block = (
@@ -112,6 +112,12 @@ def _build_user_prompt(
         if dry_run_no_pr
         else ""
     )
+    extra_block = ""
+    if extra_fix_constraints and extra_fix_constraints.strip():
+        extra_block = (
+            "\n## Additional operator constraints\n\n"
+            f"{extra_fix_constraints.strip()}\n"
+        )
     mode = (
         "### Repository mode (stack-only)\n"
         "There is **no** `git clone` in this pod. Use **only GitHub MCP** to read and modify "
@@ -142,6 +148,12 @@ Recent history / instructions:
 ```
 {git_summary}
 ```
+
+### Mandatory: do not break callers
+**Do not change** any HTTP/API **path**, route pattern, ingress path, or OpenAPI path key. Fix behavior
+**behind** the same endpoints only. If you believe a path change is required, stop and describe why in the
+summary instead of shipping a breaking route change unless the logs prove mismatch with an **existing**
+published API contract.{extra_block}
 
 When your changes are ready, use **GitHub MCP** to publish: suggested head branch name `{branch_hint}`;
 PR **base** **must** be **`{base_branch}`**—not `main` unless `{base_branch}` is literally `main`.{pr_block}
@@ -210,6 +222,7 @@ def process_log_incident(
         settings.pod_label_name,
         settings.pod_label_value,
         settings.dry_run_no_pr,
+        settings.fix_constraints,
     )
 
     logger.info(

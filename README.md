@@ -103,6 +103,7 @@ Do **not** put GitHub PATs in the Rummager pod for GitHub.com API calls; configu
 | `RUMMAGER_LLM_PARALLEL_TOOL_CALLS` | No | — | If `false`, disables parallel tool calls (can reduce ordering variance). |
 | `RUMMAGER_PR_BRANCH_PREFIX` | No | `rummager-agent` | Suggested head-branch prefix for the model (GitHub MCP). |
 | `RUMMAGER_DRY_RUN_NO_PR` | No | `false` | If `true`, the model is instructed **not** to open a PR or push. |
+| `RUMMAGER_FIX_CONSTRAINTS` | No | — | Optional free-text appended to the user prompt (extra rules, e.g. naming or modules). Built-in prompts already forbid changing HTTP/API paths and public routes. |
 
 \*At least one of **`RUMMAGER_GIT_REPOSITORY`** or **`RUMMAGER_GIT_CLONE_URL`** must be set. For **stack-only** deployments, set **`RUMMAGER_GIT_REPOSITORY`** and leave **`RUMMAGER_GIT_CLONE_URL`** unset.
 
