@@ -42,9 +42,12 @@ GitHub MCP remains the source of truth for publishing.
 Goals:
 1. Perform **root cause analysis** from the logs. Use the log excerpts as primary evidence.
 2. Inspect and change code using **GitHub MCP** (required when there is no local clone). Use workspace
-   tools only when the user message indicates a populated clone.
+   tools only when the user message indicates a populated clone. For **every** GitHub MCP call that accepts
+   a branch, tag, or SHA (file contents, tree, search, etc.), use the **branch/ref named in the user
+   message** (`RUMMAGER_GIT_BRANCH`)—that is the application revision to analyze; do not silently use
+   the repository default branch.
 3. Apply **minimal, correct fixes**; publish with **GitHub MCP only** (commit/branch/push/PR as your tools allow).
-   The PR **base** must match the branch named in the user message—**do not** assume `main` unless given.
+   The PR **base** must be that same branch/ref—**do not** assume `main` unless it was explicitly given.
 4. This Python process never calls GitHub's HTTP API; only MCP tools do.
 
 If this process also has a **Kubernetes MCP** tool group, use it only when extra cluster context helps.
@@ -127,7 +130,10 @@ Selector: `{label_name}={label_value}`
 {logs_blob}
 
 ## Target GitHub repository
-**`{owner}/{repo}`** — PR base / target branch: **`{base_branch}`**
+**`{owner}/{repo}`**
+
+**Configured ref (`RUMMAGER_GIT_BRANCH`):** **`{base_branch}`** — use this ref for **all** GitHub MCP reads
+(file/tree/search APIs that take a ref) and as the **PR merge base** (target branch).
 
 {mode}## Workspace path on disk
 `{repo_path}` (may be empty except a marker file when stack-only)
