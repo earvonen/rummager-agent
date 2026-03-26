@@ -35,8 +35,6 @@ data:
   RUMMAGER_POD_LABEL_VALUE: "redhat-screensaver"
   # owner/repo — set for all deployments; required when RUMMAGER_GIT_CLONE_URL is omitted (stack-only pod).
   RUMMAGER_GIT_REPOSITORY: "earvonen/redhat-screensaver"
-  # Omit or leave unset when the pod has no egress to git hosts (only Llama Stack). GitHub MCP supplies source.
-  RUMMAGER_GIT_CLONE_URL: "https://github.com/earvonen/redhat-screensaver.git"
   RUMMAGER_GIT_BRANCH: "test"
   RUMMAGER_POLL_INTERVAL_SECONDS: "10"
   # Optional: only include log lines from the last N seconds (Kubernetes sinceSeconds)
