@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 import re
 import subprocess
-import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
@@ -31,17 +30,51 @@ class GitSource:
     default_branch_hint: str | None
 
 
-def git_source_from_clone_url(clone_url: str, branch: str) -> GitSource | None:
-    """Build GitSource from configured clone URL and branch (checkout + PR base)."""
-    url = clone_url.strip()
-    if not url:
+def parse_repository_slug(slug: str) -> tuple[str, str] | None:
+    """Parse ``owner/repo`` (exactly one slash, two non-empty parts)."""
+    s = slug.strip()
+    if not s or s.count("/") != 1:
         return None
-    b = branch.strip()
-    parsed = _owner_repo_from_clone_url(url)
-    if not parsed:
-        logger.warning("Could not parse owner/repo from RUMMAGER_GIT_CLONE_URL: %s", url)
+    owner, _, name = s.partition("/")
+    owner, name = owner.strip(), name.strip()
+    if not owner or not name or "/" in name:
         return None
-    owner, repo = parsed
+    return owner, name
+
+
+def resolve_git_source(
+    git_repository: str | None,
+    git_clone_url: str | None,
+    git_branch: str,
+) -> GitSource:
+    """
+    Resolve owner/repo from ``RUMMAGER_GIT_REPOSITORY`` and/or ``RUMMAGER_GIT_CLONE_URL``.
+
+    ``clone_url`` may be empty for stack-only pods (no git network egress); GitHub MCP supplies source.
+    """
+    b = (git_branch or "").strip()
+    url = (git_clone_url or "").strip()
+    slug = (git_repository or "").strip()
+
+    owner: str
+    repo: str
+    if slug:
+        parsed = parse_repository_slug(slug)
+        if not parsed:
+            raise ValueError(
+                "RUMMAGER_GIT_REPOSITORY must be exactly owner/repo (one slash, two non-empty parts)"
+            )
+        owner, repo = parsed
+    elif url:
+        parsed = _owner_repo_from_clone_url(url)
+        if not parsed:
+            raise ValueError(
+                "Could not parse owner/repo from RUMMAGER_GIT_CLONE_URL; set RUMMAGER_GIT_REPOSITORY"
+            )
+        owner, repo = parsed
+    else:
+        raise ValueError("Set RUMMAGER_GIT_REPOSITORY (owner/repo) or RUMMAGER_GIT_CLONE_URL")
+
     return GitSource(
         owner=owner,
         repo=repo,
@@ -52,7 +85,7 @@ def git_source_from_clone_url(clone_url: str, branch: str) -> GitSource | None:
 
 
 def _owner_repo_from_clone_url(clone_url: str) -> tuple[str, str] | None:
-    """Best-effort owner/repo for GitHub PRs and logging; supports https and git@ GitHub, else URL path tail."""
+    """Best-effort owner/repo for logging; supports GitHub https / git@, else URL path tail."""
     u = clone_url.strip()
     m = _GITHUB_HTTPS.search(u)
     if m:
@@ -73,33 +106,22 @@ def _owner_repo_from_clone_url(clone_url: str) -> tuple[str, str] | None:
     return None
 
 
-def _authenticated_clone_url(clone_url: str, token: str | None) -> str:
-    if not token:
-        return clone_url
-    if not clone_url.startswith("https://github.com/"):
-        return clone_url
-    rest = clone_url.removeprefix("https://")
-    user = urllib.parse.quote("x-access-token", safe="")
-    tok = urllib.parse.quote(token, safe="")
-    return f"https://{user}:{tok}@{rest}"
-
-
 def clone_repository(
     source: GitSource,
     dest: Path,
-    token: str | None,
     depth: int,
 ) -> Path:
+    url = source.clone_url.strip()
+    if not url:
+        raise ValueError("clone_repository requires a non-empty clone URL")
+
     dest.mkdir(parents=True, exist_ok=True)
     if dest.exists() and any(dest.iterdir()):
         raise FileExistsError(f"Workspace not empty: {dest}")
-
-    url = _authenticated_clone_url(source.clone_url, token)
     rev = (source.revision or "").strip()
     if rev:
         logger.info("Cloning %s into %s (branch/ref %r, shallow)", source.clone_url, dest, rev)
         try:
-            # Shallow single-branch clone so HEAD is the configured branch, not the repo default (e.g. main).
             Repo.clone_from(
                 url,
                 dest,
@@ -132,6 +154,20 @@ def clone_repository(
     return dest
 
 
+STACK_ONLY_MARKER = ".rummager-stack-only"
+
+
+def workspace_git_summary_for_prompt(repo_path: Path, source: GitSource) -> str:
+    """Recent commits if cloned; otherwise instruct the model to use GitHub MCP only."""
+    if not source.clone_url.strip():
+        ref = source.default_branch_hint or "?"
+        return (
+            f"(no local git clone — this pod has no git clone; use **GitHub MCP** for all reads/edits/PRs "
+            f"on repository **`{source.owner}/{source.repo}`**, branch/ref **`{ref}`**)"
+        )
+    return git_repo_summary(repo_path)
+
+
 def git_repo_summary(repo_path: Path, max_lines: int = 200) -> str:
     try:
         out = subprocess.check_output(
@@ -146,134 +182,3 @@ def git_repo_summary(repo_path: Path, max_lines: int = 200) -> str:
     if len(lines) > max_lines:
         lines = lines[:max_lines] + ["..."]
     return "\n".join(lines)
-
-
-def _create_feature_branch_from_base(
-    r: Repo,
-    branch_name: str,
-    configured_base: str,
-    fetch_depth: int,
-) -> None:
-    """
-    Put model edits on ``branch_name`` starting at ``origin/<configured_base>`` (or fetch it first).
-    Uses stash so a dirty tree cannot block switching away from an accidental ``main`` checkout.
-    """
-    r.git.stash("push", "-u", "-m", "rummager-wip")
-    stash_pop_attempted = False
-    try:
-        refspec = f"refs/heads/{configured_base}:refs/remotes/origin/{configured_base}"
-        try:
-            r.git.fetch("origin", refspec, depth=fetch_depth)
-        except Exception as e:
-            logger.info(
-                "Fetch %s failed (branch may already exist locally): %s",
-                refspec,
-                e,
-            )
-        remote_ref = f"origin/{configured_base}"
-        try:
-            r.git.rev_parse("--verify", remote_ref)
-        except Exception:
-            try:
-                r.git.fetch("origin", configured_base, depth=fetch_depth)
-            except Exception as e2:
-                raise RuntimeError(
-                    f"Could not fetch configured branch {configured_base!r} from origin; "
-                    f"check RUMMAGER_GIT_BRANCH and repo access."
-                ) from e2
-            try:
-                r.git.rev_parse("--verify", remote_ref)
-            except Exception as e3:
-                raise RuntimeError(
-                    f"After fetch, ref {remote_ref!r} is still missing; "
-                    f"verify the branch name matches the remote."
-                ) from e3
-
-        r.git.checkout(remote_ref)
-        try:
-            r.git.checkout("-b", branch_name)
-        except Exception as e:
-            raise RuntimeError(
-                f"Branch {branch_name!r} may already exist; remove it or use a new RUMMAGER_PR_BRANCH_PREFIX."
-            ) from e
-        stash_pop_attempted = True
-        r.git.stash("pop")
-    except Exception:
-        if not stash_pop_attempted:
-            try:
-                r.git.stash("pop")
-            except Exception as e2:
-                logger.warning(
-                    "Could not restore working tree from stash after failed branch setup: %s",
-                    e2,
-                )
-        raise
-
-
-def create_branch_commit_push_pr(
-    repo_path: Path,
-    branch_name: str,
-    token: str,
-    owner: str,
-    repo: str,
-    title: str,
-    body: str,
-    base_branch: str | None,
-    fetch_depth: int = 50,
-) -> str:
-    """
-    Commit all changes, push branch, open a pull request via GitHub REST API.
-    """
-    r = Repo(repo_path)
-    with r.config_writer() as cw:
-        cw.set_value("user", "name", "rummager-agent")
-        cw.set_value("user", "email", "rummager-agent@users.noreply.openshift.local")
-    configured_base = (base_branch or "").strip() or None
-
-    if r.is_dirty(untracked_files=True):
-        if configured_base:
-            _create_feature_branch_from_base(r, branch_name, configured_base, fetch_depth)
-        else:
-            r.git.checkout("-b", branch_name)
-        r.git.add(all=True)
-        r.git.commit("-m", "fix: address error seen in pod logs (Rummager)")
-    else:
-        return "(no local changes; skipping PR)"
-
-    auth_url = _authenticated_clone_url(f"https://github.com/{owner}/{repo}.git", token)
-    r.git.remote("set-url", "origin", auth_url)
-    r.git.push("--set-upstream", "origin", branch_name)
-
-    import json
-    import urllib.error
-    import urllib.request
-
-    base = configured_base
-    if not base:
-        try:
-            base = r.git.rev_parse("--abbrev-ref", "origin/HEAD").replace("origin/", "")
-        except Exception:
-            base = "main"
-
-    logger.info("GitHub PR: base=%r head=%r", base, branch_name)
-
-    url = f"https://api.github.com/repos/{owner}/{repo}/pulls"
-    payload = {"title": title, "body": body, "head": branch_name, "base": base}
-    req = urllib.request.Request(
-        url,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "Accept": "application/vnd.github+json",
-            "Authorization": f"Bearer {token}",
-            "X-GitHub-Api-Version": "2022-11-28",
-            "Content-Type": "application/json",
-        },
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            return str(data.get("html_url", data))
-    except urllib.error.HTTPError as e:
-        err_body = e.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"GitHub PR API error {e.code}: {err_body}") from e

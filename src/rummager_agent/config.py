@@ -41,14 +41,19 @@ class Settings(BaseSettings):
         validation_alias="RUMMAGER_POD_LABEL_VALUE",
     )
 
-    git_clone_url: str = Field(
-        ...,
-        description="HTTPS or SSH clone URL for the application repository",
+    git_repository: str | None = Field(
+        None,
+        validation_alias="RUMMAGER_GIT_REPOSITORY",
+        description="Repository as owner/repo (e.g. org/app). Use in stack-only pods without RUMMAGER_GIT_CLONE_URL.",
+    )
+    git_clone_url: str | None = Field(
+        None,
         validation_alias="RUMMAGER_GIT_CLONE_URL",
+        description="Optional git clone URL. Leave unset when the pod only reaches Llama Stack (no git host egress).",
     )
     git_branch: str = Field(
         ...,
-        description="Branch to check out locally and as PR merge base",
+        description="Branch/ref for PR base and optional local checkout",
         validation_alias="RUMMAGER_GIT_BRANCH",
     )
 
@@ -71,12 +76,6 @@ class Settings(BaseSettings):
         description='Optional JSON list: [{"toolgroup_id":"mcp::x","provider_id":"model-context-protocol","mcp_uri":"http://host/sse"}]',
     )
 
-    github_token: str | None = Field(
-        None,
-        validation_alias="GITHUB_TOKEN",
-        description="Optional: HTTPS clone of private repos + REST API PR fallback. "
-        "If unset, use public clone only and rely on GitHub MCP (its own PAT) for PRs.",
-    )
     git_clone_depth: int = Field(50, validation_alias="RUMMAGER_GIT_CLONE_DEPTH")
     workspace_root: str = Field("/tmp/rummager-workspaces", validation_alias="RUMMAGER_WORKSPACE_ROOT")
 
@@ -106,10 +105,26 @@ class Settings(BaseSettings):
         description="If set, this regex is also applied to the log text (multi-line)",
     )
 
-    pr_branch_prefix: str = Field("rummager-agent", validation_alias="RUMMAGER_PR_BRANCH_PREFIX")
-    dry_run_no_pr: bool = Field(False, validation_alias="RUMMAGER_DRY_RUN_NO_PR")
+    pr_branch_prefix: str = Field(
+        "rummager-agent",
+        validation_alias="RUMMAGER_PR_BRANCH_PREFIX",
+        description="Suggested Git head branch prefix in prompts (model opens PR via GitHub MCP).",
+    )
+    dry_run_no_pr: bool = Field(
+        False,
+        validation_alias="RUMMAGER_DRY_RUN_NO_PR",
+        description="If true, instruct the model not to push or open a PR.",
+    )
 
     _compiled_error_regex: re.Pattern[str] | None = PrivateAttr(default=None)
+
+    @model_validator(mode="after")
+    def _require_git_identity(self) -> Settings:
+        if not (self.git_repository or "").strip() and not (self.git_clone_url or "").strip():
+            raise ValueError(
+                "Set RUMMAGER_GIT_REPOSITORY (owner/repo) and/or RUMMAGER_GIT_CLONE_URL (at least one)"
+            )
+        return self
 
     @model_validator(mode="after")
     def _compile_regex(self) -> Settings:

@@ -33,6 +33,9 @@ data:
   RUMMAGER_KUBERNETES_NAMESPACE: "agentic-demo"
   RUMMAGER_POD_LABEL_NAME: "app"
   RUMMAGER_POD_LABEL_VALUE: "redhat-screensaver"
+  # owner/repo — set for all deployments; required when RUMMAGER_GIT_CLONE_URL is omitted (stack-only pod).
+  RUMMAGER_GIT_REPOSITORY: "earvonen/redhat-screensaver"
+  # Omit or leave unset when the pod has no egress to git hosts (only Llama Stack). GitHub MCP supplies source.
   RUMMAGER_GIT_CLONE_URL: "https://github.com/earvonen/redhat-screensaver.git"
   RUMMAGER_GIT_BRANCH: "test"
   RUMMAGER_POLL_INTERVAL_SECONDS: "10"
@@ -76,12 +79,6 @@ spec:
           env:
             - name: HOME
               value: /var/lib/rummager-agent
-            # Optional: GITHUB_TOKEN only if you need HTTPS clone of private repos or REST PR fallback
-            # - name: GITHUB_TOKEN
-            #   valueFrom:
-            #     secretKeyRef:
-            #       name: rummager-agent-github
-            #       key: token
             # - name: LLAMA_STACK_API_KEY
             #   valueFrom:
             #     secretKeyRef:

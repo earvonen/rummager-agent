@@ -12,10 +12,10 @@ from llama_stack_client import LlamaStackClient
 from rummager_agent.config import Settings
 from rummager_agent.git_repo import (
     GitSource,
+    STACK_ONLY_MARKER,
     clone_repository,
-    create_branch_commit_push_pr,
-    git_repo_summary,
-    git_source_from_clone_url,
+    resolve_git_source,
+    workspace_git_summary_for_prompt,
 )
 from rummager_agent.k8s_pods import (
     PodLogSnapshot,
@@ -32,19 +32,20 @@ logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = """You are an expert software engineer running inside **Rummager**, a Kubernetes log-remediation agent.
 
-You are given application **pod logs** that contain errors, and a **local Git clone** of the application
-repository (branch from configuration). Your goals:
+You are given application **pod logs** that contain errors and the identity of the target repository
+(owner/repo and branch). This deployment may have **no local git clone** (the pod may only reach Llama
+Stack, not git hosts); in that case you must use **GitHub MCP for all repository access**—read, search,
+apply changes, and open pull requests. If a local workspace exists with a clone, you may use
+`workspace_list_files`, `workspace_read_file`, and `workspace_write_file` there as a convenience, but
+GitHub MCP remains the source of truth for publishing.
 
+Goals:
 1. Perform **root cause analysis** from the logs. Use the log excerpts as primary evidence.
-2. When you need additional source context, use **GitHub MCP tools** at your discretion (browse files,
-   search, commits, etc.). The local workspace is already a clone of the configured branch; you may also
-   use `workspace_list_files`, `workspace_read_file`, and `workspace_write_file` under that clone.
-3. Apply **minimal, correct fixes** with `workspace_write_file` (or equivalent) so changes land in the
-   local clone.
-4. When the fix is ready, use **GitHub MCP tools** to publish: branch, push, and open a **pull request**.
-   The PR **base** branch must be **exactly** the branch named in the user message (the same as
-   `RUMMAGER_GIT_BRANCH` / the local clone)—**do not** use `main` or the repo default unless that branch
-   name was explicitly given. GitHub authentication is handled by the GitHub MCP server when used that way.
+2. Inspect and change code using **GitHub MCP** (required when there is no local clone). Use workspace
+   tools only when the user message indicates a populated clone.
+3. Apply **minimal, correct fixes**; publish with **GitHub MCP only** (commit/branch/push/PR as your tools allow).
+   The PR **base** must match the branch named in the user message—**do not** assume `main` unless given.
+4. This Python process never calls GitHub's HTTP API; only MCP tools do.
 
 If this process also has a **Kubernetes MCP** tool group, use it only when extra cluster context helps.
 
@@ -52,7 +53,7 @@ Constraints:
 - Prefer small, reviewable changes; do not refactor unrelated code.
 - Do not commit secrets or credentials.
 - After you believe the fix is complete, summarize root cause and changes in plain language (include the
-  PR link if you have it).
+  PR link from MCP if you opened one).
 """
 
 
@@ -95,10 +96,27 @@ def _build_user_prompt(
     repo_path: Path,
     branch_hint: str,
     base_branch: str,
+    owner: str,
+    repo: str,
+    stack_only: bool,
     label_name: str,
     label_value: str,
+    dry_run_no_pr: bool,
 ) -> str:
     logs_blob = snapshot.combined_log if snapshot.combined_log.strip() else "(no log lines collected)"
+    pr_block = (
+        "\n\n**Dry run:** Do **not** open a pull request or push branches; only analyze and describe the fix.\n"
+        if dry_run_no_pr
+        else ""
+    )
+    mode = (
+        "### Repository mode (stack-only)\n"
+        "There is **no** `git clone` in this pod. Use **only GitHub MCP** to read and modify "
+        f"`{owner}/{repo}` on branch/ref **`{base_branch}`**. The workspace path below is scratch only.\n\n"
+        if stack_only
+        else "### Repository mode (local clone)\n"
+        "A shallow clone exists under the workspace path; you may use workspace tools and/or GitHub MCP.\n\n"
+    )
     return f"""## Kubernetes workload
 
 Namespace: `{snapshot.namespace}`
@@ -108,23 +126,21 @@ Selector: `{label_name}={label_value}`
 ### Collected pod logs
 {logs_blob}
 
-## Local repository
-Path on disk: `{repo_path}`
-Configured branch (checkout + suggested PR base): **`{base_branch}`**
+## Target GitHub repository
+**`{owner}/{repo}`** — PR base / target branch: **`{base_branch}`**
 
-Recent commits:
+{mode}## Workspace path on disk
+`{repo_path}` (may be empty except a marker file when stack-only)
+
+Recent history / instructions:
 ```
 {git_summary}
 ```
 
-Use **GitHub MCP** tools when you want to inspect or cross-check source beyond the clone. Use
-`workspace_list_files` / `workspace_read_file` / `workspace_write_file` for edits under the clone.
+When your changes are ready, use **GitHub MCP** to publish: suggested head branch name `{branch_hint}`;
+PR **base** **must** be **`{base_branch}`**—not `main` unless `{base_branch}` is literally `main`.{pr_block}
 
-When your changes are ready, open a pull request with suggested head branch name `{branch_hint}`.
-The PR **base** (merge target) **must** be **`{base_branch}`**—not `main` or any other branch unless
-`{base_branch}` is literally that name.
-
-Then write a short summary of the root cause and the fix (include the PR link if you have it).
+Then write a short summary of the root cause and the fix (include the PR link from MCP if you opened one).
 """
 
 
@@ -141,26 +157,40 @@ def process_log_incident(
     if ws.exists():
         shutil.rmtree(ws)
 
-    try:
-        clone_repository(src, ws, settings.github_token, settings.git_clone_depth)
-    except Exception as e:
-        logger.exception(
-            "Clone failed for %s/%s: %s. For private repos set GITHUB_TOKEN; otherwise ensure the repo is public.",
+    stack_only = not bool(src.clone_url.strip())
+    if stack_only:
+        ws.mkdir(parents=True, exist_ok=True)
+        (ws / STACK_ONLY_MARKER).write_text(
+            "Stack-only: use GitHub MCP for repository access.\n",
+            encoding="utf-8",
+        )
+        logger.info(
+            "No RUMMAGER_GIT_CLONE_URL — workspace is scratch only; model must use GitHub MCP for %s/%s",
             src.owner,
             src.repo,
-            e,
         )
-        state.mark_incident_processed(
-            incident_id,
-            {
-                "reason": "clone_failed",
-                "pod": snapshot.pod_name,
-                "namespace": snapshot.namespace,
-            },
-        )
-        return
+    else:
+        try:
+            clone_repository(src, ws, settings.git_clone_depth)
+        except Exception as e:
+            logger.exception(
+                "Clone failed for %s/%s: %s. For stack-only deployments unset RUMMAGER_GIT_CLONE_URL "
+                "and set RUMMAGER_GIT_REPOSITORY.",
+                src.owner,
+                src.repo,
+                e,
+            )
+            state.mark_incident_processed(
+                incident_id,
+                {
+                    "reason": "clone_failed",
+                    "pod": snapshot.pod_name,
+                    "namespace": snapshot.namespace,
+                },
+            )
+            return
 
-    summary = git_repo_summary(ws)
+    summary = workspace_git_summary_for_prompt(ws, src)
     branch_hint = f"{settings.pr_branch_prefix}/pod-{snapshot.pod_name}"[:250]
     user_prompt = _build_user_prompt(
         snapshot,
@@ -168,8 +198,12 @@ def process_log_incident(
         ws,
         branch_hint,
         settings.git_branch,
+        src.owner,
+        src.repo,
+        stack_only,
         settings.pod_label_name,
         settings.pod_label_value,
+        settings.dry_run_no_pr,
     )
 
     logger.info(
@@ -203,70 +237,35 @@ def process_log_incident(
 
     logger.info("Model finished with summary (excerpt): %s", llm_summary[:2000])
 
-    pr_url: str | None = None
-    pr_via = "github_mcp"
     if settings.dry_run_no_pr:
-        logger.info("RUMMAGER_DRY_RUN_NO_PR set; skipping PR creation")
+        logger.info("RUMMAGER_DRY_RUN_NO_PR set; model was instructed not to open a PR")
         pr_via = "dry_run"
-    elif settings.github_token:
-        branch = branch_hint
-        pr_title = f"fix(logs): error in pod {snapshot.pod_name} ({snapshot.namespace})"
-        pr_body = (
-            f"Automated fix proposal from **Rummager** (pod log monitor).\n\n"
-            f"Pod: `{snapshot.namespace}/{snapshot.pod_name}` (UID `{snapshot.pod_uid}`)\n\n"
-            f"### Model summary\n\n{llm_summary}\n"
-        )
-        try:
-            pr_url = create_branch_commit_push_pr(
-                ws,
-                branch_name=branch,
-                token=settings.github_token,
-                owner=src.owner,
-                repo=src.repo,
-                title=pr_title,
-                body=pr_body,
-                base_branch=settings.git_branch.strip() or src.default_branch_hint,
-                fetch_depth=settings.git_clone_depth,
-            )
-        except Exception:
-            logger.exception("Failed to create pull request for %s/%s", src.owner, src.repo)
-            state.mark_incident_processed(
-                incident_id,
-                {
-                    "reason": "pr_failed",
-                    "pod": snapshot.pod_name,
-                    "namespace": snapshot.namespace,
-                    "repository": f"{src.owner}/{src.repo}",
-                    "model_summary_excerpt": llm_summary[:8000],
-                },
-            )
-            return
-        pr_via = "github_rest"
     else:
-        logger.info(
-            "GITHUB_TOKEN unset: skipping in-app PR/push; expecting GitHub MCP to have opened a PR if needed"
-        )
+        logger.info("Expecting GitHub MCP (only) for any push/PR; see model summary for links")
+        pr_via = "github_mcp"
 
-    logger.info("Pull request result: %s", pr_url or "(none from app; see GitHub MCP / model summary)")
     state.mark_incident_processed(
         incident_id,
         {
             "pod": snapshot.pod_name,
             "namespace": snapshot.namespace,
             "repository": f"{src.owner}/{src.repo}",
-            "pull_request": pr_url,
             "pr_via": pr_via,
+            "model_summary_excerpt": llm_summary[:8000],
         },
     )
 
 
 def run_forever(settings: Settings, state: StateStore) -> None:
     load_kube_config()
-    src = git_source_from_clone_url(settings.git_clone_url, settings.git_branch)
-    if not src:
-        raise RuntimeError(
-            "Could not derive GitHub owner/repo from RUMMAGER_GIT_CLONE_URL; check the URL format."
+    try:
+        src = resolve_git_source(
+            settings.git_repository,
+            settings.git_clone_url,
+            settings.git_branch,
         )
+    except ValueError as e:
+        raise RuntimeError(str(e)) from e
 
     client = LlamaStackClient(
         base_url=settings.llama_stack_base_url,
