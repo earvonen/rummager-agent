@@ -94,6 +94,13 @@ Do **not** put GitHub PATs in the Rummager pod for GitHub.com API calls; configu
 | `RUMMAGER_MCP_REGISTRATIONS_JSON` | No | — | JSON array to register MCP SSE endpoints at startup. |
 | `RUMMAGER_GIT_CLONE_DEPTH` | No | `50` | Shallow clone depth. |
 | `RUMMAGER_MAX_LLM_ITERATIONS` | No | `40` | Max chat completion rounds (tool loops). |
+| `RUMMAGER_LLM_TEMPERATURE` | No | `0` | Chat sampling temperature (`0` = greedy/low randomness; full reproducibility still depends on the model/stack). |
+| `RUMMAGER_LLM_TOP_P` | No | — | If set, nucleus sampling `top_p` (0–1). |
+| `RUMMAGER_LLM_SEED` | No | — | If set, passed to the API where supported. |
+| `RUMMAGER_LLM_FREQUENCY_PENALTY` | No | — | If set, `-2`…`2`. |
+| `RUMMAGER_LLM_PRESENCE_PENALTY` | No | — | If set, `-2`…`2`. |
+| `RUMMAGER_LLM_MAX_COMPLETION_TOKENS` | No | — | If set, caps output tokens when the stack supports it. |
+| `RUMMAGER_LLM_PARALLEL_TOOL_CALLS` | No | — | If `false`, disables parallel tool calls (can reduce ordering variance). |
 | `RUMMAGER_PR_BRANCH_PREFIX` | No | `rummager-agent` | Suggested head-branch prefix for the model (GitHub MCP). |
 | `RUMMAGER_DRY_RUN_NO_PR` | No | `false` | If `true`, the model is instructed **not** to open a PR or push. |
 
@@ -146,6 +153,10 @@ Delete an entry or the file to re-process a fingerprint. Mount a **PersistentVol
 | `src/rummager_agent/config.py` | Settings / env parsing |
 | `src/rummager_agent/state_store.py` | Processed incident persistence |
 | `deploy/openshift.yaml` | Example SA, Role, ConfigMap, Deployment |
+
+## LLM sampling (determinism)
+
+- Defaults use **`RUMMAGER_LLM_TEMPERATURE=0`** for greedy-style sampling. **True determinism** still depends on the model, inference stack, parallel tool execution, and whether **`seed`** is honored—tune **`RUMMAGER_LLM_*`** env vars and set **`RUMMAGER_LLM_PARALLEL_TOOL_CALLS=false`** if you need stricter ordering.
 
 ## Limitations
 

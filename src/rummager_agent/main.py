@@ -227,7 +227,7 @@ def process_log_incident(
             repo_root=ws,
             system_prompt=SYSTEM_PROMPT,
             user_prompt=user_prompt,
-            max_iterations=settings.max_llm_iterations,
+            settings=settings,
         )
     except Exception:
         logger.exception("Llama Stack run failed for %s/%s", snapshot.namespace, snapshot.pod_name)

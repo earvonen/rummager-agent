@@ -80,6 +80,40 @@ class Settings(BaseSettings):
     workspace_root: str = Field("/tmp/rummager-workspaces", validation_alias="RUMMAGER_WORKSPACE_ROOT")
 
     max_llm_iterations: int = Field(40, validation_alias="RUMMAGER_MAX_LLM_ITERATIONS")
+
+    llm_temperature: float = Field(
+        0.0,
+        validation_alias="RUMMAGER_LLM_TEMPERATURE",
+        description="Chat completion temperature; 0 maximizes greedy sampling (still not fully deterministic on all stacks).",
+    )
+    llm_top_p: float | None = Field(
+        None,
+        validation_alias="RUMMAGER_LLM_TOP_P",
+        description="If set, passed as top_p (nucleus sampling). Omit for server default.",
+    )
+    llm_seed: int | None = Field(
+        None,
+        validation_alias="RUMMAGER_LLM_SEED",
+        description="If set, passed as seed where the backend supports it for reproducibility.",
+    )
+    llm_frequency_penalty: float | None = Field(
+        None,
+        validation_alias="RUMMAGER_LLM_FREQUENCY_PENALTY",
+    )
+    llm_presence_penalty: float | None = Field(
+        None,
+        validation_alias="RUMMAGER_LLM_PRESENCE_PENALTY",
+    )
+    llm_max_completion_tokens: int | None = Field(
+        None,
+        validation_alias="RUMMAGER_LLM_MAX_COMPLETION_TOKENS",
+        description="Cap completion length if the stack supports max_completion_tokens.",
+    )
+    llm_parallel_tool_calls: bool | None = Field(
+        None,
+        validation_alias="RUMMAGER_LLM_PARALLEL_TOOL_CALLS",
+        description="If false, disables parallel tool calls (can reduce ordering variance). If unset, server default.",
+    )
     log_tail_lines: int = Field(3000, validation_alias="RUMMAGER_LOG_TAIL_LINES")
     log_truncate_bytes: int = Field(65536, validation_alias="RUMMAGER_LOG_TRUNCATE_BYTES")
     log_truncate_bytes_per_container: int | None = Field(
@@ -180,6 +214,38 @@ class Settings(BaseSettings):
             )
         return out
 
+    @field_validator("llm_temperature")
+    @classmethod
+    def _temperature_range(cls, v: float) -> float:
+        if not 0.0 <= v <= 2.0:
+            raise ValueError("RUMMAGER_LLM_TEMPERATURE must be between 0 and 2")
+        return v
+
+    @field_validator("llm_top_p")
+    @classmethod
+    def _top_p_range(cls, v: float | None) -> float | None:
+        if v is None:
+            return None
+        if not 0.0 <= v <= 1.0:
+            raise ValueError("RUMMAGER_LLM_TOP_P must be between 0 and 1")
+        return v
+
+    @field_validator("llm_frequency_penalty", "llm_presence_penalty")
+    @classmethod
+    def _penalty_range(cls, v: float | None) -> float | None:
+        if v is None:
+            return None
+        if not -2.0 <= v <= 2.0:
+            raise ValueError("penalty must be between -2 and 2")
+        return v
+
+    @field_validator("llm_seed", mode="before")
+    @classmethod
+    def _seed_optional(cls, v: Any) -> int | None:
+        if v is None or v == "":
+            return None
+        return int(v)
+
     @field_validator(
         "poll_interval_seconds",
         "git_clone_depth",
@@ -188,6 +254,7 @@ class Settings(BaseSettings):
         "log_truncate_bytes",
         "log_truncate_bytes_per_container",
         "log_max_age_seconds",
+        "llm_max_completion_tokens",
     )
     @classmethod
     def _positive_optional(cls, v: int | None) -> int | None:

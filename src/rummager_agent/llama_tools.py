@@ -10,6 +10,8 @@ from llama_stack_client.types.chat.completion_create_response import (
     ChoiceMessageOpenAIAssistantMessageParamOutput,
 )
 
+from rummager_agent.config import Settings
+
 logger = logging.getLogger(__name__)
 
 LOCAL_TOOL_NAMES = frozenset(
@@ -205,6 +207,35 @@ def _assistant_to_message_dict(
     return out
 
 
+def _chat_completion_kwargs(
+    settings: Settings,
+    model_id: str,
+    messages: list[dict[str, Any]],
+    openai_tools: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Build kwargs for ``client.chat.completions.create`` from settings (deterministic defaults: temp 0)."""
+    d: dict[str, Any] = {
+        "model": model_id,
+        "messages": messages,
+        "tools": openai_tools,
+        "tool_choice": "auto",
+        "temperature": settings.llm_temperature,
+    }
+    if settings.llm_top_p is not None:
+        d["top_p"] = settings.llm_top_p
+    if settings.llm_seed is not None:
+        d["seed"] = settings.llm_seed
+    if settings.llm_frequency_penalty is not None:
+        d["frequency_penalty"] = settings.llm_frequency_penalty
+    if settings.llm_presence_penalty is not None:
+        d["presence_penalty"] = settings.llm_presence_penalty
+    if settings.llm_max_completion_tokens is not None:
+        d["max_completion_tokens"] = settings.llm_max_completion_tokens
+    if settings.llm_parallel_tool_calls is not None:
+        d["parallel_tool_calls"] = settings.llm_parallel_tool_calls
+    return d
+
+
 def run_tool_assisted_fix(
     client: LlamaStackClient,
     model_id: str,
@@ -212,7 +243,7 @@ def run_tool_assisted_fix(
     repo_root: Path,
     system_prompt: str,
     user_prompt: str,
-    max_iterations: int,
+    settings: Settings,
 ) -> str:
     mcp_defs, name_to_group = collect_mcp_tool_definitions(client, tool_group_ids)
     openai_tools = build_openai_tools_from_defs(mcp_defs) + local_tool_definitions()
@@ -233,13 +264,10 @@ def run_tool_assisted_fix(
     }
 
     last_text = ""
+    max_iterations = settings.max_llm_iterations
     for i in range(max_iterations):
         resp = client.chat.completions.create(
-            model=model_id,
-            messages=messages,
-            tools=openai_tools,
-            tool_choice="auto",
-            temperature=0.2,
+            **_chat_completion_kwargs(settings, model_id, messages, openai_tools),
         )
         choice = resp.choices[0]
         msg = choice.message
