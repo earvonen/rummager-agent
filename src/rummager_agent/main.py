@@ -30,32 +30,31 @@ from rummager_agent.state_store import StateStore
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """You are an expert software engineer running inside **Rummager**, a Kubernetes log-remediation agent.
+SYSTEM_PROMPT = """You are an expert software engineer running inside **Rummager**, a Kubernetes log-monitoring agent.
 
-You are given application **pod logs** that contain errors and the identity of the target repository
-(owner/repo and branch). Use **GitHub MCP for all repository access**: read, search, apply changes, and
-open pull requests.
+You are given **pod logs** from a workload selected by a **label selector** (a set of pods, not a single fixed pod),
+plus the identity of the target repository (owner/repo and branch/ref).
 
-Goals:
-1. Perform **root cause analysis** from the logs. Use the log excerpts as primary evidence.
-2. Inspect and change the codebase **through GitHub MCP**. For every MCP call that accepts a branch, tag,
-   or SHA, use the **ref named in the user message** (`RUMMAGER_GIT_BRANCH`); do not silently use the
-   repository default branch.
-3. Apply **minimal, correct fixes**; publish with **GitHub MCP only** (commit/branch/push/PR as your tools allow).
-   The PR **base** must be that same branch/ref—**do not** assume `main` unless it was explicitly given.
-4. This Python process never calls GitHub's HTTP API; only MCP tools do.
+Use **GitHub MCP for all repository access** (read and search). For every GitHub MCP call that accepts a branch, tag,
+or SHA, use the configured ref from the user message (`RUMMAGER_GIT_BRANCH`)—do not silently use the repository default
+branch.
 
-If this process also has a **Kubernetes MCP** tool group, use it only when extra cluster context helps.
+Mission:
+1. Perform **root cause analysis** from the provided logs. Quote the exact log lines that demonstrate the failure.
+2. Using GitHub MCP, locate the most likely responsible code path on `RUMMAGER_GIT_BRANCH` and cite it precisely
+   (file paths + function/class names; include links if your tools provide them).
+3. Create a **GitHub issue** (via GitHub MCP) describing:
+   - What happened (symptoms + impact)
+   - Evidence (key log excerpts)
+   - Root cause hypothesis, tied to specific code locations
+   - A concrete, minimal fix plan (what to change), without changing public API paths
 
-Constraints:
-- Prefer small, reviewable changes; do not refactor unrelated code.
-- Do not commit secrets or credentials.
-
-**API stability:** Do not change client-visible paths or URLs (HTTP routes, ingress, OpenAPI paths,
-webhooks, etc.). Fix behavior **behind** the same endpoints and methods. Treat obvious public gRPC/GraphQL
-surface the same way—unless logs prove a typo against an **existing** spec, then align and **say so** in
-your summary. When you finish, summarize root cause and changes (PR link if any) and **confirm no
-client-facing paths changed** (or the rare spec-alignment exception).
+Non-negotiable constraints:
+- **Do not modify code**. Do not create commits, branches, or pull requests. This agent files issues only.
+- **API stability**: Do not propose changes that rename/move client-visible HTTP paths/URLs (routes, ingress paths,
+  OpenAPI paths, webhooks). Fix behavior behind existing endpoints; if a spec mismatch is proven, call it out explicitly
+  in the issue instead of shipping a breaking path change.
+- This Python process never calls GitHub's HTTP API; only MCP tools do.
 """
 
 
@@ -108,7 +107,7 @@ def _build_user_prompt(
 ) -> str:
     logs_blob = snapshot.combined_log if snapshot.combined_log.strip() else "(no log lines collected)"
     pr_block = (
-        "\n\n**Dry run:** Do **not** open a pull request or push branches; only analyze and describe the fix.\n"
+        "\n\n**Dry run:** Do **not** create or modify GitHub issues; only analyze and describe the root cause.\n"
         if dry_run_no_pr
         else ""
     )
@@ -120,11 +119,11 @@ def _build_user_prompt(
         )
     mode = (
         "### Repository mode (stack-only)\n"
-        "There is **no** `git clone` in this pod. Use **only GitHub MCP** to read and modify "
-        f"`{owner}/{repo}` on branch/ref **`{base_branch}`**. The workspace path below is scratch only.\n\n"
+        "There is **no** `git clone` in this pod. Use **only GitHub MCP** to read/search the repo on the configured ref. "
+        "The workspace path below is scratch only.\n\n"
         if stack_only
         else "### Repository mode (local clone)\n"
-        "A shallow clone exists under the workspace path; you may use workspace tools and/or GitHub MCP.\n\n"
+        "A shallow clone exists under the workspace path. Do not modify code in this workspace; use it only for context.\n\n"
     )
     return f"""## Kubernetes workload
 
@@ -139,7 +138,7 @@ Selector: `{label_name}={label_value}`
 **`{owner}/{repo}`**
 
 **Configured ref (`RUMMAGER_GIT_BRANCH`):** **`{base_branch}`** — use this ref for **all** GitHub MCP reads
-(file/tree/search APIs that take a ref) and as the **PR merge base** (target branch).
+(file/tree/search APIs that take a ref). Do not assume `main` unless `{base_branch}` is literally `main`.
 
 {mode}## Workspace path on disk
 `{repo_path}` (may be empty except a marker file when stack-only)
@@ -150,15 +149,14 @@ Recent history / instructions:
 ```
 
 ### Mandatory: do not break callers
-**Do not change** any HTTP/API **path**, route pattern, ingress path, or OpenAPI path key. Fix behavior
-**behind** the same endpoints only. If you believe a path change is required, stop and describe why in the
-summary instead of shipping a breaking route change unless the logs prove mismatch with an **existing**
-published API contract.{extra_block}
+Do not recommend changes that rename/move client-visible HTTP/API **paths** (routes, ingress paths, OpenAPI
+paths, webhooks). Recommend fixes **behind** existing endpoints only. If a spec mismatch is proven, call it
+out explicitly in the issue rather than proposing a breaking path change.{extra_block}
 
-When your changes are ready, use **GitHub MCP** to publish: suggested head branch name `{branch_hint}`;
-PR **base** **must** be **`{base_branch}`**—not `main` unless `{base_branch}` is literally `main`.{pr_block}
+When you are ready, use **GitHub MCP** to create a **GitHub issue** in `{owner}/{repo}` describing the root
+cause and a minimal fix plan (no code changes in this run).{pr_block}
 
-Then write a short summary of the root cause and the fix (include the PR link from MCP if you opened one).
+Then write a short summary of the root cause and the issue you created (include the issue link if available).
 """
 
 
@@ -209,12 +207,12 @@ def process_log_incident(
             return
 
     summary = workspace_git_summary_for_prompt(ws, src)
-    branch_hint = f"{settings.pr_branch_prefix}/pod-{snapshot.pod_name}"[:250]
+    issue_title_hint = f"{settings.pr_branch_prefix}: error in pod {snapshot.pod_name}"[:250]
     user_prompt = _build_user_prompt(
         snapshot,
         summary,
         ws,
-        branch_hint,
+        issue_title_hint,
         settings.git_branch,
         src.owner,
         src.repo,
@@ -257,10 +255,10 @@ def process_log_incident(
     logger.info("Model finished with summary (excerpt): %s", llm_summary[:2000])
 
     if settings.dry_run_no_pr:
-        logger.info("RUMMAGER_DRY_RUN_NO_PR set; model was instructed not to open a PR")
+        logger.info("RUMMAGER_DRY_RUN_NO_PR set; model was instructed not to create an issue")
         pr_via = "dry_run"
     else:
-        logger.info("Expecting GitHub MCP (only) for any push/PR; see model summary for links")
+        logger.info("Expecting GitHub MCP (only) to create an issue; see model summary for links")
         pr_via = "github_mcp"
 
     state.mark_incident_processed(

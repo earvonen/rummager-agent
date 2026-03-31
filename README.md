@@ -1,6 +1,6 @@
 # Rummager (rummager-agent)
 
-**Rummager** is a Python service for **Kubernetes / OpenShift** that **polls pod logs** for workloads selected by a **label**, detects **error-like** lines, and drives a **Llama Stack** model with **MCP tools** (GitHub, optional Kubernetes) plus optional local **workspace** tools. The model performs root cause analysis and is instructed to **use GitHub MCP** for repository access and PRs. **Production pods** can omit `RUMMAGER_GIT_CLONE_URL` so the container **only needs egress to Llama Stack** (no `git` traffic to GitHub); set **`RUMMAGER_GIT_REPOSITORY`** (`owner/repo`) and **`RUMMAGER_GIT_BRANCH`** so the model knows what to target. **This process does not call the GitHub HTTP API** from Python.
+**Rummager** is a Python service for **Kubernetes / OpenShift** that **polls pod logs** for workloads selected by a **label**, detects **error-like** lines, and drives a **Llama Stack** model with **MCP tools** (GitHub, optional Kubernetes) plus optional local **workspace** tools. The model performs root cause analysis and is instructed to **use GitHub MCP** for repository access. **Production pods** can omit `RUMMAGER_GIT_CLONE_URL` so the container **only needs egress to Llama Stack** (no `git` traffic to GitHub); set **`RUMMAGER_GIT_REPOSITORY`** (`owner/repo`) and **`RUMMAGER_GIT_BRANCH`** so the model knows what to target. **This process does not call the GitHub HTTP API** from Python.
 
 ## What it does
 

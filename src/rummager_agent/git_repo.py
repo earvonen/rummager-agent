@@ -162,7 +162,7 @@ def workspace_git_summary_for_prompt(repo_path: Path, source: GitSource) -> str:
     if not source.clone_url.strip():
         ref = source.default_branch_hint or "?"
         return (
-            f"(no local git clone — this pod has no git clone; use **GitHub MCP** for all reads/edits/PRs "
+            f"(no local git clone — this pod has no git clone; use **GitHub MCP** for all repository reads/search and issue creation "
             f"on repository **`{source.owner}/{source.repo}`**, branch/ref **`{ref}`**)"
         )
     return git_repo_summary(repo_path)
